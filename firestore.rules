@@ -1,0 +1,227 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email_verified == true && request.auth.token.email == 'vanhayd2@gmail.com') ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(ownerUid) {
+      return isSignedIn() && request.auth.uid == ownerUid;
+    }
+
+    function isValidTeacher(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.phone is string && data.phone.size() <= 20
+        && data.email is string && data.email.size() <= 180
+        && data.status in ['active', 'locked']
+        && data.accountType in ['FREE', 'VIP']
+        && data.role in ['teacher', 'admin']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSystemConfig(data) {
+      return data.vipModeEnabled is bool
+        && (!('maintenanceMode' in data) || data.maintenanceMode is bool)
+        && data.updatedAt is timestamp
+        && (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 128));
+    }
+
+    function isValidVocabulary(data) {
+      return data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128
+        && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 80
+        && data.vietnamese is string && data.vietnamese.size() >= 1 && data.vietnamese.size() <= 300
+        && data.english is string && data.english.size() >= 1 && data.english.size() <= 300
+        && (!('ipa' in data) || (data.ipa is string && data.ipa.size() <= 200))
+        && (!('partOfSpeech' in data) || (data.partOfSpeech is string && data.partOfSpeech.size() <= 60))
+        && (!('exampleEn' in data) || (data.exampleEn is string && data.exampleEn.size() <= 600))
+        && (!('exampleVi' in data) || (data.exampleVi is string && data.exampleVi.size() <= 600))
+        && data.mastered is bool
+        && data.reviewCount is int && data.reviewCount >= 0 && data.reviewCount <= 100000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudent(data) {
+      return data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128
+        && data.orderNumber is int && data.orderNumber >= 0 && data.orderNumber <= 100000
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.className is string && data.className.size() >= 1 && data.className.size() <= 40
+        && (!('dateOfBirth' in data) || (data.dateOfBirth is string && data.dateOfBirth.size() <= 30))
+        && data.studentCode is string && data.studentCode.size() >= 1 && data.studentCode.size() <= 50
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGame(data) {
+      return data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.gameType in ['match', 'multiple_choice', 'fill_blank', 'sentence_order', 'image_guess', 'listening_choice']
+        && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 80
+        && data.difficulty in ['easy', 'medium', 'hard']
+        && data.questionCount is int && data.questionCount >= 1 && data.questionCount <= 100
+        && data.questions is list && data.questions.size() <= 100
+        && data.isActive is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidExam(data) {
+      return data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.gradeLevel is int && data.gradeLevel >= 1 && data.gradeLevel <= 12
+        && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 100
+        && data.durationMinutes is int && data.durationMinutes >= 1 && data.durationMinutes <= 300
+        && (!('openTime' in data) || (data.openTime is string && data.openTime.size() <= 40))
+        && (!('closeTime' in data) || (data.closeTime is string && data.closeTime.size() <= 40))
+        && data.maxScore is number && data.maxScore >= 1 && data.maxScore <= 1000
+        && data.allowViewAnswers is bool
+        && data.allowRetake is bool
+        && data.isActive is bool
+        && (!('sourceFileUrl' in data) || (data.sourceFileUrl is string && data.sourceFileUrl.size() <= 1000))
+        && (!('sourceFileName' in data) || (data.sourceFileName is string && data.sourceFileName.size() <= 255))
+        && data.questions is list && data.questions.size() <= 200
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Teachers collection: PII isolated to owner or Admin; teachers CANNOT self-escalate VIP or status
+    match /teachers/{teacherId} {
+      allow get: if isValidId(teacherId) && (isOwner(teacherId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(teacherId)
+        && isOwner(teacherId)
+        && isValidTeacher(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().accountType == 'FREE'
+        && incoming().status == 'active'
+        && incoming().role == 'teacher'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(teacherId)
+        && isValidTeacher(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isOwner(teacherId)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(teacherId) && isAdmin();
+    }
+
+    // Admins collection
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list, create, update, delete: if isAdmin();
+    }
+
+    // Global VIP & system configuration
+    match /systemConfig/{configId} {
+      allow get: if isValidId(configId);
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(configId) && isAdmin() && isValidSystemConfig(incoming()) && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // Personal vocabulary list
+    match /vocabularies/{vocabId} {
+      allow get: if isValidId(vocabId) && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || isAdmin());
+      allow create: if isValidId(vocabId) && isSignedIn()
+        && isValidVocabulary(incoming())
+        && incoming().teacherId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(vocabId) && isSignedIn()
+        && isValidVocabulary(incoming())
+        && incoming().teacherId == existing().teacherId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (existing().teacherId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(vocabId) && isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    // Teacher's student roster
+    match /students/{studentId} {
+      allow get: if isValidId(studentId) && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || isAdmin());
+      allow create: if isValidId(studentId) && isSignedIn()
+        && isValidStudent(incoming())
+        && incoming().teacherId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(studentId) && isSignedIn()
+        && isValidStudent(incoming())
+        && incoming().teacherId == existing().teacherId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (existing().teacherId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(studentId) && isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    // Teacher's English games
+    match /games/{gameId} {
+      allow get: if isValidId(gameId) && (existing().teacherId == request.auth.uid || isAdmin() || existing().isActive == true);
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || isAdmin());
+      allow create: if isValidId(gameId) && isSignedIn()
+        && isValidGame(incoming())
+        && incoming().teacherId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(gameId) && isSignedIn()
+        && isValidGame(incoming())
+        && incoming().teacherId == existing().teacherId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (existing().teacherId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(gameId) && isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    // Teacher's exams
+    match /exams/{examId} {
+      allow get: if isValidId(examId) && (existing().teacherId == request.auth.uid || isAdmin() || existing().isActive == true);
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || isAdmin());
+      allow create: if isValidId(examId) && isSignedIn()
+        && isValidExam(incoming())
+        && incoming().teacherId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(examId) && isSignedIn()
+        && isValidExam(incoming())
+        && incoming().teacherId == existing().teacherId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (existing().teacherId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(examId) && isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+  }
+}

@@ -1,0 +1,152 @@
+{
+  "entities": {
+    "Teacher": {
+      "title": "Teacher",
+      "description": "Teacher account profile stored in Firestore without plain-text passwords.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "phone": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "email": { "type": "string", "minLength": 0, "maxLength": 180 },
+        "status": { "type": "string", "enum": ["active", "locked"] },
+        "accountType": { "type": "string", "enum": ["FREE", "VIP"] },
+        "role": { "type": "string", "enum": ["teacher", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "phone", "status", "accountType", "role", "createdAt", "updatedAt"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Authorized Firebase Admin UIDs.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "SystemConfig": {
+      "title": "SystemConfig",
+      "description": "Global application settings including VIP mode enforcement.",
+      "type": "object",
+      "properties": {
+        "vipModeEnabled": { "type": "boolean" },
+        "maintenanceMode": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": ["vipModeEnabled", "updatedAt"]
+    },
+    "Vocabulary": {
+      "title": "Vocabulary",
+      "description": "Personal saved English vocabulary item for a user/teacher.",
+      "type": "object",
+      "properties": {
+        "teacherId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "topic": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "vietnamese": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "english": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "ipa": { "type": "string", "minLength": 0, "maxLength": 200 },
+        "partOfSpeech": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "exampleEn": { "type": "string", "minLength": 0, "maxLength": 600 },
+        "exampleVi": { "type": "string", "minLength": 0, "maxLength": 600 },
+        "mastered": { "type": "boolean" },
+        "reviewCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teacherId", "topic", "vietnamese", "english", "mastered", "reviewCount", "createdAt", "updatedAt"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student record belonging to a specific teacher.",
+      "type": "object",
+      "properties": {
+        "teacherId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderNumber": { "type": "integer" },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "className": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "dateOfBirth": { "type": "string", "minLength": 0, "maxLength": 30 },
+        "studentCode": { "type": "string", "minLength": 1, "maxLength": 50 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teacherId", "orderNumber", "fullName", "className", "studentCode", "createdAt", "updatedAt"]
+    },
+    "Game": {
+      "title": "Game",
+      "description": "Interactive English learning game created by a teacher.",
+      "type": "object",
+      "properties": {
+        "teacherId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "gameType": { "type": "string", "enum": ["match", "multiple_choice", "fill_blank", "sentence_order", "image_guess", "listening_choice"] },
+        "topic": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "difficulty": { "type": "string", "enum": ["easy", "medium", "hard"] },
+        "questionCount": { "type": "integer" },
+        "questions": { "type": "array" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teacherId", "title", "gameType", "topic", "difficulty", "questionCount", "questions", "isActive", "createdAt", "updatedAt"]
+    },
+    "Exam": {
+      "title": "Exam",
+      "description": "English test/exam created or parsed from Word/PDF by a teacher.",
+      "type": "object",
+      "properties": {
+        "teacherId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "gradeLevel": { "type": "integer" },
+        "topic": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "durationMinutes": { "type": "integer" },
+        "openTime": { "type": "string", "maxLength": 40 },
+        "closeTime": { "type": "string", "maxLength": 40 },
+        "maxScore": { "type": "number" },
+        "allowViewAnswers": { "type": "boolean" },
+        "allowRetake": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "sourceFileUrl": { "type": "string", "maxLength": 1000 },
+        "sourceFileName": { "type": "string", "maxLength": 255 },
+        "questions": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teacherId", "title", "gradeLevel", "topic", "durationMinutes", "maxScore", "allowViewAnswers", "allowRetake", "isActive", "questions", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/teachers/{teacherId}": {
+      "schema": { "$ref": "#/entities/Teacher" },
+      "description": "Teacher profiles and VIP/status flags."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/Admin" },
+      "description": "Authorized admin accounts."
+    },
+    "/systemConfig/{configId}": {
+      "schema": { "$ref": "#/entities/SystemConfig" },
+      "description": "Global VIP mode and system configuration."
+    },
+    "/vocabularies/{vocabId}": {
+      "schema": { "$ref": "#/entities/Vocabulary" },
+      "description": "Saved personal vocabulary flashcards per teacher/learner."
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Student roster managed by teachers."
+    },
+    "/games/{gameId}": {
+      "schema": { "$ref": "#/entities/Game" },
+      "description": "Teacher-created interactive English games."
+    },
+    "/exams/{examId}": {
+      "schema": { "$ref": "#/entities/Exam" },
+      "description": "Teacher-created and Word/PDF parsed English exams."
+    }
+  }
+}

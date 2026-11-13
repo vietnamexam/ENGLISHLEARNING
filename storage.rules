@@ -1,0 +1,16 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /exams/{teacherId}/{fileName} {
+      allow read: if request.auth != null && (request.auth.uid == teacherId || request.auth.token.email == 'vanhayd2@gmail.com');
+      allow write: if request.auth != null
+        && request.auth.uid == teacherId
+        && request.resource.size < 15 * 1024 * 1024
+        && (
+          request.resource.contentType == 'application/pdf' ||
+          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+          request.resource.contentType == 'application/msword'
+        );
+    }
+  }
+}
