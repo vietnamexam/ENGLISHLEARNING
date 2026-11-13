@@ -27,7 +27,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
-import { useAuth } from '../../context/AuthContext';
+import { formatFirebaseAuthError, useAuth } from '../../context/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import type { StudentRecord } from '../../types';
 import { ConfirmModal } from '../common/ConfirmModal';
@@ -57,6 +57,7 @@ export function AccountView() {
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [submittingAuth, setSubmittingAuth] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Dashboard sub-tab
   const [activeTab, setActiveTab] = useState<'profile' | 'students'>('profile');
@@ -152,6 +153,7 @@ export function AccountView() {
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmittingAuth(true);
+    setAuthError(null);
     try {
       if (authTab === 'register') {
         await registerTeacher(fullName, phone, password);
@@ -162,10 +164,9 @@ export function AccountView() {
       }
       setPassword('');
     } catch (error) {
-      showToast(
-        error instanceof Error ? error.message : 'Xác thực thất bại. Vui lòng kiểm tra lại.',
-        'error'
-      );
+      const msg = formatFirebaseAuthError(error);
+      setAuthError(msg);
+      showToast(msg, 'error');
     } finally {
       setSubmittingAuth(false);
     }
@@ -173,11 +174,14 @@ export function AccountView() {
 
   const handleGoogleAuth = async () => {
     setSubmittingAuth(true);
+    setAuthError(null);
     try {
       await loginWithGoogle();
       showToast('Đăng nhập Google thành công!', 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Đăng nhập Google thất bại.', 'error');
+      const msg = formatFirebaseAuthError(error);
+      setAuthError(msg);
+      showToast(msg, 'error');
     } finally {
       setSubmittingAuth(false);
     }
@@ -412,10 +416,19 @@ export function AccountView() {
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 space-y-5">
+          {authError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs sm:text-sm text-rose-900 leading-relaxed">
+              {authError}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 rounded-xl bg-slate-100 p-1">
             <button
               type="button"
-              onClick={() => setAuthTab('login')}
+              onClick={() => {
+                setAuthTab('login');
+                setAuthError(null);
+              }}
               className={`rounded-lg py-2 text-sm font-semibold transition-colors cursor-pointer ${
                 authTab === 'login' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
               }`}
@@ -424,7 +437,10 @@ export function AccountView() {
             </button>
             <button
               type="button"
-              onClick={() => setAuthTab('register')}
+              onClick={() => {
+                setAuthTab('register');
+                setAuthError(null);
+              }}
               className={`rounded-lg py-2 text-sm font-semibold transition-colors cursor-pointer ${
                 authTab === 'register' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
               }`}

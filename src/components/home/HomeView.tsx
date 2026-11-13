@@ -8,6 +8,7 @@ import {
   Languages,
   UserCheck,
 } from 'lucide-react';
+import heroEnglishImg from '../../assets/images/hero_english_learning_1794580198925.jpg';
 import { useAuth } from '../../context/AuthContext';
 import type { AppSection } from '../../types';
 
@@ -15,7 +16,7 @@ interface HomeViewProps {
   onNavigate: (section: AppSection) => void;
 }
 
-const HERO_IMAGE_PATH = '/src/assets/images/hero_english_learning_1794580198925.jpg';
+const HERO_IMAGE_PATH = heroEnglishImg;
 
 const MODULES: {
   id: AppSection;

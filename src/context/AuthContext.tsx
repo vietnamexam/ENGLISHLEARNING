@@ -52,6 +52,44 @@ export function phoneToSyntheticEmail(phone: string): string {
   return `teacher_${digits}@englishlearning.local`;
 }
 
+export function formatFirebaseAuthError(error: unknown): string {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: string }).code || '')
+      : '';
+  const msg = error instanceof Error ? error.message : String(error);
+
+  if (code === 'auth/configuration-not-found' || msg.includes('auth/configuration-not-found')) {
+    return 'Firebase Authentication chưa được bật trên dự án englishlearning68. Vui lòng vào Firebase Console → Authentication → nhấn "Get started", bật Email/Password & Google.';
+  }
+  if (code === 'auth/operation-not-allowed' || msg.includes('auth/operation-not-allowed')) {
+    return 'Phương thức đăng nhập Email/Password hoặc Google chưa được bật trong Firebase Console → Authentication → Sign-in method.';
+  }
+  if (code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain')) {
+    return 'Tên miền hiện tại chưa được cấp phép. Hãy thêm domain vào Firebase Console → Authentication → Settings → Authorized domains.';
+  }
+  if (code === 'auth/email-already-in-use') {
+    return 'Số điện thoại này đã được đăng ký trước đó. Vui lòng chuyển sang tab Đăng nhập.';
+  }
+  if (
+    code === 'auth/invalid-credential' ||
+    code === 'auth/wrong-password' ||
+    code === 'auth/user-not-found'
+  ) {
+    return 'Số điện thoại hoặc mật khẩu không chính xác.';
+  }
+  if (code === 'auth/weak-password') {
+    return 'Mật khẩu quá yếu. Vui lòng dùng mật khẩu từ 6 ký tự trở lên.';
+  }
+  if (code === 'auth/popup-closed-by-user') {
+    return 'Bạn đã đóng cửa sổ đăng nhập Google trước khi hoàn tất.';
+  }
+  if (code === 'auth/network-request-failed') {
+    return 'Lỗi kết nối mạng tới Firebase Authentication. Vui lòng thử lại.';
+  }
+  return msg || 'Xác thực thất bại. Vui lòng kiểm tra lại.';
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [teacherProfile, setTeacherProfile] = useState<TeacherProfile | null>(null);
