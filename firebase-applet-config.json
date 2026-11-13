@@ -1,12 +1,13 @@
 {
-  "projectId": "intense-veld-6wpgt",
-  "appId": "1:671837670188:web:9a92106df564d23f6bfa89",
-  "apiKey": "AIzaSyCS1iL8KvGlk9yMQhm9x0o4oA0MdFgZv4I",
-  "authDomain": "intense-veld-6wpgt.firebaseapp.com",
+  "projectId": "englishlearning68",
+  "appId": "1:120252238805:web:296b11de67c5224ce30b5c",
+  "apiKey": "AIzaSyCMsuf_H33UuT4xbPNh0A--tVOtDDKLT9M",
+  "authDomain": "englishlearning68.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-6079a504-be6a-46ca-8b87-6ee4aaa2db33",
-  "storageBucket": "intense-veld-6wpgt.firebasestorage.app",
-  "messagingSenderId": "671837670188",
-  "measurementId": "",
+  "storageBucket": "englishlearning68.firebasestorage.app",
+  "messagingSenderId": "120252238805",
+  "measurementId": "G-KH3XEW8TF1"
   "oAuthClientId": "671837670188-if6ap4prdv2eos1n8snm90tdaumdug0c.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }
+
