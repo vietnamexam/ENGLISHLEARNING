@@ -73,7 +73,11 @@ async function createServer() {
 
   if (isProd) {
     app.use(express.static(distDir));
-    app.get('/{*path}', (_req, res) => {
+    app.use((req, res, next) => {
+      if (req.method !== 'GET' || req.path.startsWith('/api')) {
+        next();
+        return;
+      }
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
