@@ -87,6 +87,7 @@ service cloud.firestore {
         && data.questionCount is int && data.questionCount >= 1 && data.questionCount <= 100
         && data.questions is list && data.questions.size() <= 100
         && data.isActive is bool
+        && (!('expiresAt' in data) || data.expiresAt is timestamp)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -106,6 +107,23 @@ service cloud.firestore {
         && (!('sourceFileUrl' in data) || (data.sourceFileUrl is string && data.sourceFileUrl.size() <= 1000))
         && (!('sourceFileName' in data) || (data.sourceFileName is string && data.sourceFileName.size() <= 255))
         && data.questions is list && data.questions.size() <= 200
+        && (!('expiresAt' in data) || data.expiresAt is timestamp)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSampleQuestion(data) {
+      return data.questionType in ['multiple_choice', 'fill_blank', 'sentence_order', 'reading', 'grammar', 'vocabulary', 'listening', 'other']
+        && data.gradeGroup in ['all', 'primary', 'secondary', 'high']
+        && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 120
+        && data.section is string && data.section.size() >= 1 && data.section.size() <= 150
+        && data.prompt is string && data.prompt.size() >= 1 && data.prompt.size() <= 2000
+        && (!('passage' in data) || (data.passage is string && data.passage.size() <= 4000))
+        && data.options is list && data.options.size() <= 10
+        && data.correctAnswer is string && data.correctAnswer.size() >= 1 && data.correctAnswer.size() <= 1000
+        && data.points is number && data.points > 0 && data.points <= 100
+        && data.isActive is bool
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -222,6 +240,21 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (existing().teacherId == request.auth.uid || isAdmin());
       allow delete: if isValidId(examId) && isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    // Permanent sample question bank curated by Admin (never auto-expires)
+    match /sampleQuestionBank/{questionId} {
+      allow get: if isValidId(questionId) && (existing().isActive == true || isAdmin());
+      allow list: if resource.data.isActive == true || isAdmin();
+      allow create: if isValidId(questionId) && isAdmin()
+        && isValidSampleQuestion(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(questionId) && isAdmin()
+        && isValidSampleQuestion(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if isValidId(questionId) && isAdmin();
     }
   }
 }

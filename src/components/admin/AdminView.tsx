@@ -29,6 +29,7 @@ import type { TeacherProfile } from '../../types';
 import { apiRequest } from '../../utils/api';
 import { ConfirmModal } from '../common/ConfirmModal';
 import { useToast } from '../common/ToastProvider';
+import { AdminSampleBankManager } from './AdminSampleBankManager';
 
 const PAGE_SIZE = 10;
 
@@ -552,6 +553,13 @@ export function AdminView() {
           </div>
         )}
       </div>
+
+      {/* Admin Sample Exam Question Bank (Permanent Firebase Storage) */}
+      <AdminSampleBankManager
+        adminUid={user?.uid}
+        adminEmail={user?.email}
+        onRequireGoogleAdmin={loginWithGoogle}
+      />
 
       {/* Change Admin Password */}
       <form

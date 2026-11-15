@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   ClipboardCheck,
+  Clock,
   Copy,
   Dices,
   Edit3,
@@ -30,8 +31,20 @@ import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useAuth } from '../../context/AuthContext';
 import { buildAllSampleExams, rerollSampleExamById } from '../../data/examQuestionBank';
 import { db, handleFirestoreError, OperationType, storage } from '../../lib/firebase';
-import type { ExamQuestion, ExamQuestionType, ExamRecord } from '../../types';
+import type {
+  ExamQuestion,
+  ExamQuestionType,
+  ExamRecord,
+  SampleBankQuestion,
+} from '../../types';
 import { apiRequest } from '../../utils/api';
+import {
+  buildSevenDayExpiresTimestamp,
+  type ExpiredItemSummary,
+  getRetentionBadgeInfo,
+  inspectAndCleanupTeacherRetention,
+  isRecordExpired,
+} from '../../utils/retention';
 import { playCorrectSound, playWrongSound } from '../../utils/soundEffects';
 import { speakEnglish } from '../../utils/speech';
 import { AudioControlBar } from '../common/AudioControlBar';
@@ -53,10 +66,13 @@ export function ExamsView() {
   const { user, canUseVipFeatures, vipConfig } = useAuth();
   const { showToast } = useToast();
 
+  const [extraBankQuestions, setExtraBankQuestions] = useState<SampleBankQuestion[]>([]);
   const [sampleExams, setSampleExams] = useState<ExamRecord[]>(() => buildAllSampleExams());
 
   const [exams, setExams] = useState<ExamRecord[]>([]);
   const [loadingList, setLoadingList] = useState(false);
+  const [expiredItems, setExpiredItems] = useState<ExpiredItemSummary[]>([]);
+  const [cleaningExpired, setCleaningExpired] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'editor' | 'take'>('list');
 
   // Editor State
@@ -88,17 +104,71 @@ export function ExamsView() {
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [attemptCount, setAttemptCount] = useState<Record<string, number>>({});
 
+  // Subscribe to permanent Admin sample question bank in Firebase
+  useEffect(() => {
+    const bankQuery = query(
+      collection(db, 'sampleQuestionBank'),
+      where('isActive', '==', true)
+    );
+    const unsub = onSnapshot(
+      bankQuery,
+      (snap) => {
+        const list = snap.docs.map(
+          (d) => ({ id: d.id, ...d.data() }) as SampleBankQuestion
+        );
+        setExtraBankQuestions(list);
+        setSampleExams(buildAllSampleExams(list));
+      },
+      (err) => {
+        console.warn('Could not load Admin sampleQuestionBank:', err);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  const runRetentionSync = useCallback(
+    async (uid: string, autoDelete: boolean) => {
+      try {
+        const res = await inspectAndCleanupTeacherRetention(uid, { autoDelete });
+        setExpiredItems(res.remainingExpired);
+        const totalDeleted = res.deletedGames + res.deletedExams;
+        if (totalDeleted > 0) {
+          showToast(
+            `Hệ thống đã tự động xóa ${totalDeleted} trò chơi/đề thi quá thời hạn lưu 7 ngày.`,
+            'info'
+          );
+        }
+        return res;
+      } catch (err) {
+        console.warn('Retention sync warning:', err);
+        return null;
+      }
+    },
+    [showToast]
+  );
+
   useEffect(() => {
     if (!user) {
       setExams([]);
+      setExpiredItems([]);
       return;
     }
     setLoadingList(true);
+    runRetentionSync(user.uid, true);
+
     const q = query(collection(db, 'exams'), where('teacherId', '==', user.uid));
     const unsub = onSnapshot(
       q,
       (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as ExamRecord);
+        const expired = list.filter((e) => isRecordExpired(e));
+        if (expired.length > 0) {
+          expired.forEach((item) => {
+            deleteDoc(doc(db, 'exams', item.id)).catch((err) =>
+              console.warn('Auto-delete expired exam failed:', item.id, err)
+            );
+          });
+        }
         setExams(list);
         setLoadingList(false);
       },
@@ -108,7 +178,7 @@ export function ExamsView() {
       }
     );
     return () => unsub();
-  }, [user]);
+  }, [user, runRetentionSync]);
 
   useEffect(() => {
     if (viewMode !== 'take' || submittedScore !== null || secondsLeft <= 0) return;
@@ -140,9 +210,37 @@ export function ExamsView() {
     setQuestions([]);
   };
 
-  const handleOpenCreate = () => {
+  const handleCleanupRemainingExpired = async () => {
+    if (!user) return;
+    setCleaningExpired(true);
+    try {
+      const res = await inspectAndCleanupTeacherRetention(user.uid, { autoDelete: true });
+      setExpiredItems(res.remainingExpired);
+      if (res.remainingExpired.length === 0) {
+        showToast('Đã xóa sạch các đề thi và trò chơi quá hạn 7 ngày.', 'success');
+      } else {
+        showToast(
+          `Vẫn còn ${res.remainingExpired.length} mục quá hạn chưa xóa được.`,
+          'error'
+        );
+      }
+    } finally {
+      setCleaningExpired(false);
+    }
+  };
+
+  const handleOpenCreate = async () => {
     if (!user) {
       showToast('Vui lòng đăng nhập tài khoản giáo viên để tạo đề kiểm tra riêng.', 'error');
+      return;
+    }
+    const guard = await inspectAndCleanupTeacherRetention(user.uid, { autoDelete: false });
+    setExpiredItems(guard.remainingExpired);
+    if (!guard.canCreate) {
+      showToast(
+        `Không thể tạo mới: Bạn còn ${guard.remainingExpired.length} đề thi/trò chơi tồn tại quá 7 ngày chưa xóa. Vui lòng xóa hết trước khi tạo mới.`,
+        'error'
+      );
       return;
     }
     resetEditor();
@@ -167,7 +265,7 @@ export function ExamsView() {
   };
 
   const handleRerollSampleExam = (examId: string, autoStart = false) => {
-    const fresh = rerollSampleExamById(examId);
+    const fresh = rerollSampleExamById(examId, extraBankQuestions);
     if (!fresh) return;
     setSampleExams((prev) => prev.map((e) => (e.id === examId ? fresh : e)));
     if (autoStart) {
@@ -271,6 +369,19 @@ export function ExamsView() {
 
     setSaving(true);
     try {
+      if (!editingId) {
+        const guard = await inspectAndCleanupTeacherRetention(user.uid, { autoDelete: false });
+        setExpiredItems(guard.remainingExpired);
+        if (!guard.canCreate) {
+          showToast(
+            `Bị chặn tạo mới: Có ${guard.remainingExpired.length} đề thi/trò chơi quá 7 ngày chưa xóa. Vui lòng xóa hết trước.`,
+            'error'
+          );
+          setSaving(false);
+          return;
+        }
+      }
+
       const payload = {
         teacherId: user.uid,
         title: title.trim(),
@@ -295,9 +406,10 @@ export function ExamsView() {
       } else {
         await addDoc(collection(db, 'exams'), {
           ...payload,
+          expiresAt: buildSevenDayExpiresTimestamp(),
           createdAt: serverTimestamp(),
         });
-        showToast('Đã lưu đề thi lên Firebase.', 'success');
+        showToast('Đã lưu đề thi lên Firebase (tự động lưu 7 ngày).', 'success');
       }
       setViewMode('list');
       resetEditor();
@@ -315,6 +427,15 @@ export function ExamsView() {
 
   const handleDuplicateExam = async (exam: ExamRecord) => {
     if (!user) return;
+    const guard = await inspectAndCleanupTeacherRetention(user.uid, { autoDelete: false });
+    setExpiredItems(guard.remainingExpired);
+    if (!guard.canCreate) {
+      showToast(
+        `Bị chặn sao chép: Có ${guard.remainingExpired.length} đề thi/trò chơi quá 7 ngày chưa xóa. Vui lòng xóa hết trước.`,
+        'error'
+      );
+      return;
+    }
     try {
       await addDoc(collection(db, 'exams'), {
         teacherId: user.uid,
@@ -331,10 +452,11 @@ export function ExamsView() {
         sourceFileUrl: exam.sourceFileUrl || '',
         sourceFileName: exam.sourceFileName || '',
         questions: exam.questions,
+        expiresAt: buildSevenDayExpiresTimestamp(),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      showToast('Đã sao chép đề thi.', 'success');
+      showToast('Đã sao chép đề thi (lưu 7 ngày).', 'success');
     } catch (error) {
       showToast('Không thể sao chép đề thi.', 'error');
       handleFirestoreError(error, OperationType.CREATE, 'exams');
@@ -1031,7 +1153,10 @@ export function ExamsView() {
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
             Bao gồm Từ vựng, Ngữ pháp, Trắc nghiệm, Điền từ, Sắp xếp câu, Đọc hiểu, Nghe hiểu và
-            Tìm lỗi sai.
+            Tìm lỗi sai
+            {extraBankQuestions.length > 0
+              ? ` · Đã kết nối thêm ${extraBankQuestions.length} câu hỏi từ kho Admin trên Firebase.`
+              : '.'}
           </p>
         </div>
 
@@ -1078,9 +1203,37 @@ export function ExamsView() {
 
       {/* Section 2: Teacher's Firebase Exams */}
       <section className="space-y-4">
-        <h2 className="font-display text-xl font-bold text-slate-900">
-          Đề kiểm tra của giáo viên (Lưu trên hệ thống 7 ngày)
-        </h2>
+        <div>
+          <h2 className="font-display text-xl font-bold text-slate-900">
+            Đề kiểm tra của giáo viên (Lưu trên hệ thống 7 ngày)
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Đề kiểm tra do giáo viên tạo chỉ lưu 7 ngày trên Firebase và tự động xóa khi hết hạn.
+            Nếu có đề thi hoặc trò chơi tồn tại quá 7 ngày chưa xóa, hệ thống sẽ chặn tạo mới cho
+            tới khi được dọn dẹp.
+          </p>
+        </div>
+
+        {user && expiredItems.length > 0 && (
+          <div className="rounded-2xl border border-rose-300 bg-rose-50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-rose-950">
+            <div className="flex items-start gap-2.5 text-sm">
+              <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <strong>Tạm chặn tạo đề kiểm tra/trò chơi mới:</strong> Bạn còn{' '}
+                <strong>{expiredItems.length}</strong> mục đã lưu quá 7 ngày chưa được xóa (
+                {expiredItems.map((i) => i.title).join(', ')}).
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={cleaningExpired}
+              onClick={handleCleanupRemainingExpired}
+              className="rounded-lg bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60 shrink-0 cursor-pointer"
+            >
+              {cleaningExpired ? 'Đang xóa...' : 'Xóa ngay các mục quá 7 ngày'}
+            </button>
+          </div>
+        )}
 
         {!user ? (
           <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
@@ -1102,31 +1255,47 @@ export function ExamsView() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {exams.map((exam) => (
-              <div
-                key={exam.id}
-                className="rounded-2xl border border-slate-200 bg-white p-5 flex flex-col justify-between gap-4"
-              >
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-xs text-slate-500">
-                    <span>
-                      Lớp {exam.gradeLevel} · {exam.topic} ·{' '}
-                      <span className="tabular-nums">{exam.durationMinutes} phút</span>
-                    </span>
-                    <span
-                      className={`font-semibold ${
-                        exam.isActive ? 'text-emerald-700' : 'text-slate-400'
-                      }`}
-                    >
-                      {exam.isActive ? 'Đang mở' : 'Đang tắt'}
-                    </span>
+            {exams.map((exam) => {
+              const retention = getRetentionBadgeInfo(exam);
+              return (
+                <div
+                  key={exam.id}
+                  className={`rounded-2xl border bg-white p-5 flex flex-col justify-between gap-4 ${
+                    retention.expired ? 'border-rose-300 bg-rose-50/30' : 'border-slate-200'
+                  }`}
+                >
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                      <span>
+                        Lớp {exam.gradeLevel} · {exam.topic} ·{' '}
+                        <span className="tabular-nums">{exam.durationMinutes} phút</span>
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold tabular-nums ${
+                            retention.expired
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-sky-50 text-sky-700'
+                          }`}
+                        >
+                          <Clock className="h-3 w-3" />
+                          {retention.label}
+                        </span>
+                        <span
+                          className={`font-semibold ${
+                            exam.isActive ? 'text-emerald-700' : 'text-slate-400'
+                          }`}
+                        >
+                          {exam.isActive ? 'Đang mở' : 'Đang tắt'}
+                        </span>
+                      </div>
+                    </div>
+                    <h3 className="font-display text-lg font-bold text-slate-900">{exam.title}</h3>
+                    <p className="text-xs text-slate-500 tabular-nums">
+                      {exam.questions?.length || 0} câu hỏi · Điểm tối đa {exam.maxScore} ·{' '}
+                      {exam.allowViewAnswers ? 'Cho xem đáp án' : 'Ẩn đáp án'}
+                    </p>
                   </div>
-                  <h3 className="font-display text-lg font-bold text-slate-900">{exam.title}</h3>
-                  <p className="text-xs text-slate-500 tabular-nums">
-                    {exam.questions?.length || 0} câu hỏi · Điểm tối đa {exam.maxScore} ·{' '}
-                    {exam.allowViewAnswers ? 'Cho xem đáp án' : 'Ẩn đáp án'}
-                  </p>
-                </div>
 
                 <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
                   <button
@@ -1169,9 +1338,10 @@ export function ExamsView() {
                     <Trash2 className="h-3.5 w-3.5" />
                     Xóa
                   </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>

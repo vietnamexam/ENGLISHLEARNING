@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Clock,
   Dices,
   Edit3,
   Gamepad2,
@@ -31,6 +33,13 @@ import { buildAllSampleGames, rerollSampleGameById } from '../../data/gameQuesti
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import type { GameDifficulty, GameQuestion, GameRecord, GameType } from '../../types';
 import { apiRequest } from '../../utils/api';
+import {
+  buildSevenDayExpiresTimestamp,
+  type ExpiredItemSummary,
+  getRetentionBadgeInfo,
+  inspectAndCleanupTeacherRetention,
+  isRecordExpired,
+} from '../../utils/retention';
 import { playCorrectSound, playWrongSound } from '../../utils/soundEffects';
 import { speakEnglish } from '../../utils/speech';
 import { AudioControlBar } from '../common/AudioControlBar';
@@ -46,6 +55,8 @@ export function GamesView() {
 
   const [games, setGames] = useState<GameRecord[]>([]);
   const [loadingGames, setLoadingGames] = useState(false);
+  const [expiredItems, setExpiredItems] = useState<ExpiredItemSummary[]>([]);
+  const [cleaningExpired, setCleaningExpired] = useState(false);
 
   // Mode: 'list' | 'editor' | 'play'
   const [viewMode, setViewMode] = useState<'list' | 'editor' | 'play'>('list');
@@ -78,17 +89,49 @@ export function GamesView() {
   const [selectedLeft, setSelectedLeft] = useState<string | null>(null);
   const [matchedIds, setMatchedIds] = useState<string[]>([]);
 
+  const runRetentionSync = useCallback(
+    async (uid: string, autoDelete: boolean) => {
+      try {
+        const res = await inspectAndCleanupTeacherRetention(uid, { autoDelete });
+        setExpiredItems(res.remainingExpired);
+        const totalDeleted = res.deletedGames + res.deletedExams;
+        if (totalDeleted > 0) {
+          showToast(
+            `Hệ thống đã tự động xóa ${totalDeleted} trò chơi/đề thi quá thời hạn lưu 7 ngày.`,
+            'info'
+          );
+        }
+        return res;
+      } catch (err) {
+        console.warn('Retention sync warning:', err);
+        return null;
+      }
+    },
+    [showToast]
+  );
+
   useEffect(() => {
     if (!user) {
       setGames([]);
+      setExpiredItems([]);
       return;
     }
     setLoadingGames(true);
+    runRetentionSync(user.uid, true);
+
     const q = query(collection(db, 'games'), where('teacherId', '==', user.uid));
     const unsub = onSnapshot(
       q,
       (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as GameRecord);
+        const expired = list.filter((g) => isRecordExpired(g));
+        if (expired.length > 0) {
+          expired.forEach((item) => {
+            deleteDoc(doc(db, 'games', item.id)).catch((err) =>
+              console.warn('Auto-delete expired game failed:', item.id, err)
+            );
+          });
+        }
         setGames(list);
         setLoadingGames(false);
       },
@@ -98,7 +141,7 @@ export function GamesView() {
       }
     );
     return () => unsub();
-  }, [user]);
+  }, [user, runRetentionSync]);
 
   const filteredSampleGames = useMemo(() => {
     if (sampleFilterType === 'all') return sampleGames;
@@ -115,9 +158,37 @@ export function GamesView() {
     setQuestions([]);
   };
 
-  const openCreateEditor = () => {
+  const handleCleanupRemainingExpired = async () => {
+    if (!user) return;
+    setCleaningExpired(true);
+    try {
+      const res = await inspectAndCleanupTeacherRetention(user.uid, { autoDelete: true });
+      setExpiredItems(res.remainingExpired);
+      if (res.remainingExpired.length === 0) {
+        showToast('Đã xóa sạch các trò chơi và đề thi quá hạn 7 ngày.', 'success');
+      } else {
+        showToast(
+          `Vẫn còn ${res.remainingExpired.length} mục quá hạn chưa xóa được.`,
+          'error'
+        );
+      }
+    } finally {
+      setCleaningExpired(false);
+    }
+  };
+
+  const openCreateEditor = async () => {
     if (!user) {
       showToast('Vui lòng đăng nhập tài khoản giáo viên để tạo trò chơi mới.', 'error');
+      return;
+    }
+    const guard = await inspectAndCleanupTeacherRetention(user.uid, { autoDelete: false });
+    setExpiredItems(guard.remainingExpired);
+    if (!guard.canCreate) {
+      showToast(
+        `Không thể tạo mới: Bạn còn ${guard.remainingExpired.length} trò chơi/đề thi tồn tại quá 7 ngày chưa xóa. Vui lòng xóa hết trước khi tạo mới.`,
+        'error'
+      );
       return;
     }
     resetEditor();
@@ -215,6 +286,19 @@ export function GamesView() {
 
     setSaving(true);
     try {
+      if (!editingGameId) {
+        const guard = await inspectAndCleanupTeacherRetention(user.uid, { autoDelete: false });
+        setExpiredItems(guard.remainingExpired);
+        if (!guard.canCreate) {
+          showToast(
+            `Bị chặn tạo mới: Có ${guard.remainingExpired.length} trò chơi/đề thi quá 7 ngày chưa xóa. Vui lòng xóa hết trước.`,
+            'error'
+          );
+          setSaving(false);
+          return;
+        }
+      }
+
       if (editingGameId) {
         await updateDoc(doc(db, 'games', editingGameId), {
           title: title.trim(),
@@ -236,10 +320,11 @@ export function GamesView() {
           questionCount: questions.length,
           questions,
           isActive: true,
+          expiresAt: buildSevenDayExpiresTimestamp(),
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-        showToast('Đã lưu trò chơi mới lên Firebase.', 'success');
+        showToast('Đã lưu trò chơi mới lên Firebase (tự động lưu 7 ngày).', 'success');
       }
       setViewMode('list');
       resetEditor();
@@ -958,9 +1043,38 @@ export function GamesView() {
 
       {/* Section 2: Teacher's Firebase Games */}
       <section className="space-y-4">
-        <h2 className="font-display text-xl font-bold text-slate-900">
-          Trò chơi của giáo viên (Lưu trên hệ thống 7 ngày)
-        </h2>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h2 className="font-display text-xl font-bold text-slate-900">
+              Trò chơi của giáo viên (Lưu trên hệ thống 7 ngày)
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Trò chơi do giáo viên tạo được lưu tối đa 7 ngày trên Firebase và tự động xóa khi hết
+              hạn. Nếu còn mục quá 7 ngày chưa xóa, hệ thống sẽ tạm khóa chức năng tạo mới.
+            </p>
+          </div>
+        </div>
+
+        {user && expiredItems.length > 0 && (
+          <div className="rounded-2xl border border-rose-300 bg-rose-50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-rose-950">
+            <div className="flex items-start gap-2.5 text-sm">
+              <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <strong>Tạm chặn tạo trò chơi/đề thi mới:</strong> Bạn còn{' '}
+                <strong>{expiredItems.length}</strong> mục đã lưu quá 7 ngày chưa được xóa (
+                {expiredItems.map((i) => i.title).join(', ')}).
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={cleaningExpired}
+              onClick={handleCleanupRemainingExpired}
+              className="rounded-lg bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60 shrink-0 cursor-pointer"
+            >
+              {cleaningExpired ? 'Đang xóa...' : 'Xóa ngay các mục quá 7 ngày'}
+            </button>
+          </div>
+        )}
 
         {!user ? (
           <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
@@ -985,15 +1099,30 @@ export function GamesView() {
             {games.map((game) => {
               const typeLabel =
                 GAME_TYPES.find((t) => t.id === game.gameType)?.label || game.gameType;
+              const retention = getRetentionBadgeInfo(game);
               return (
                 <div
                   key={game.id}
-                  className="rounded-2xl border border-slate-200 bg-white p-5 flex flex-col justify-between gap-4"
+                  className={`rounded-2xl border bg-white p-5 flex flex-col justify-between gap-4 ${
+                    retention.expired ? 'border-rose-300 bg-rose-50/30' : 'border-slate-200'
+                  }`}
                 >
                   <div className="space-y-1.5">
-                    <div className="text-xs text-slate-500">
-                      {typeLabel} · {game.topic} ·{' '}
-                      <span className="tabular-nums">{game.questionCount} câu</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                      <span>
+                        {typeLabel} · {game.topic} ·{' '}
+                        <span className="tabular-nums">{game.questionCount} câu</span>
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold tabular-nums ${
+                          retention.expired
+                            ? 'bg-rose-100 text-rose-800'
+                            : 'bg-sky-50 text-sky-700'
+                        }`}
+                      >
+                        <Clock className="h-3 w-3" />
+                        {retention.label}
+                      </span>
                     </div>
                     <h3 className="font-display text-lg font-bold text-slate-900">{game.title}</h3>
                     <p className="text-xs text-slate-500">

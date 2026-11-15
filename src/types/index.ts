@@ -128,6 +128,7 @@ export interface GameRecord {
   questionCount: number;
   questions: GameQuestion[];
   isActive: boolean;
+  expiresAt?: unknown;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -171,6 +172,26 @@ export interface ExamRecord {
   sourceFileUrl?: string;
   sourceFileName?: string;
   questions: ExamQuestion[];
+  expiresAt?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type SampleQuestionGradeGroup = 'all' | 'primary' | 'secondary' | 'high';
+
+export interface SampleBankQuestion {
+  id: string;
+  questionType: ExamQuestionType;
+  gradeGroup: SampleQuestionGradeGroup;
+  topic: string;
+  section: string;
+  prompt: string;
+  passage?: string;
+  options: string[];
+  correctAnswer: string;
+  points: number;
+  isActive: boolean;
+  createdBy: string;
   createdAt?: unknown;
   updatedAt?: unknown;
 }

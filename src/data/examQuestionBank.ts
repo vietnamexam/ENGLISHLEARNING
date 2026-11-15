@@ -1,4 +1,51 @@
-import type { ExamQuestion, ExamQuestionType, ExamRecord } from '../types';
+import type {
+  ExamQuestion,
+  ExamQuestionType,
+  ExamRecord,
+  SampleBankQuestion,
+  SampleQuestionGradeGroup,
+} from '../types';
+
+export const EXAM_QUESTION_TYPE_OPTIONS: {
+  id: ExamQuestionType;
+  label: string;
+  defaultSection: string;
+}[] = [
+  { id: 'vocabulary', label: 'Từ vựng (Vocabulary)', defaultSection: 'Phần Từ vựng (Vocabulary)' },
+  { id: 'grammar', label: 'Ngữ pháp (Grammar)', defaultSection: 'Phần Ngữ pháp (Grammar)' },
+  {
+    id: 'multiple_choice',
+    label: 'Trắc nghiệm tổng hợp (Multiple Choice)',
+    defaultSection: 'Phần Trắc nghiệm tổng hợp (Multiple Choice)',
+  },
+  { id: 'fill_blank', label: 'Điền từ (Fill in the blank)', defaultSection: 'Phần Điền từ (Fill in the blank)' },
+  {
+    id: 'sentence_order',
+    label: 'Sắp xếp câu (Sentence Ordering)',
+    defaultSection: 'Phần Sắp xếp câu (Sentence Ordering)',
+  },
+  {
+    id: 'reading',
+    label: 'Đọc hiểu (Reading Comprehension)',
+    defaultSection: 'Phần Đọc hiểu (Reading Comprehension)',
+  },
+  { id: 'listening', label: 'Nghe hiểu (Listening)', defaultSection: 'Phần Nghe hiểu (Listening)' },
+  {
+    id: 'other',
+    label: 'Tìm lỗi sai & Viết lại câu',
+    defaultSection: 'Phần Tìm lỗi sai & Viết lại câu (Error & Transformation)',
+  },
+];
+
+export const SAMPLE_GRADE_GROUP_OPTIONS: {
+  id: SampleQuestionGradeGroup;
+  label: string;
+}[] = [
+  { id: 'all', label: 'Tất cả cấp học (Lớp 1–12)' },
+  { id: 'primary', label: 'Tiểu học (Lớp 1–5)' },
+  { id: 'secondary', label: 'THCS (Lớp 6–9)' },
+  { id: 'high', label: 'THPT (Lớp 10–12)' },
+];
 
 function shuffleArray<T>(arr: T[]): T[] {
   const copy = [...arr];
@@ -690,11 +737,39 @@ export const SAMPLE_EXAM_SPECS: SampleExamSpec[] = [
   },
 ];
 
-export function buildSampleExamFromSpec(spec: SampleExamSpec): ExamRecord {
+function getGradeGroupForLevel(gradeLevel: number): SampleQuestionGradeGroup {
+  if (gradeLevel <= 5) return 'primary';
+  if (gradeLevel <= 9) return 'secondary';
+  return 'high';
+}
+
+export function buildSampleExamFromSpec(
+  spec: SampleExamSpec,
+  extraBankQuestions: SampleBankQuestion[] = []
+): ExamRecord {
+  const targetGroup = getGradeGroupForLevel(spec.gradeLevel);
+  const matchingExtras = extraBankQuestions.filter(
+    (q) => q.isActive !== false && (q.gradeGroup === 'all' || q.gradeGroup === targetGroup)
+  );
+
   const questions: ExamQuestion[] = [];
   for (const slot of spec.distribution) {
-    const pool = EXAM_QUESTION_BANK[slot.type] || [];
-    const chosen = pickRandom(pool, slot.count).map((q) => ({
+    const basePool = EXAM_QUESTION_BANK[slot.type] || [];
+    const extraPool: ExamQuestion[] = matchingExtras
+      .filter((q) => q.questionType === slot.type)
+      .map((q) => ({
+        id: `fb-${q.id}`,
+        section: q.section || 'Phần bổ sung từ kho Admin',
+        questionType: q.questionType,
+        prompt: q.prompt,
+        passage: q.passage || undefined,
+        options: Array.isArray(q.options) ? q.options.filter(Boolean) : [],
+        correctAnswer: q.correctAnswer,
+        points: Number(q.points) || 1,
+      }));
+
+    const combinedPool = [...basePool, ...extraPool];
+    const chosen = pickRandom(combinedPool, slot.count).map((q) => ({
       ...q,
       options: q.options ? shuffleArray(q.options) : [],
     }));
@@ -716,11 +791,16 @@ export function buildSampleExamFromSpec(spec: SampleExamSpec): ExamRecord {
   };
 }
 
-export function buildAllSampleExams(): ExamRecord[] {
-  return SAMPLE_EXAM_SPECS.map(buildSampleExamFromSpec);
+export function buildAllSampleExams(
+  extraBankQuestions: SampleBankQuestion[] = []
+): ExamRecord[] {
+  return SAMPLE_EXAM_SPECS.map((spec) => buildSampleExamFromSpec(spec, extraBankQuestions));
 }
 
-export function rerollSampleExamById(examId: string): ExamRecord | null {
+export function rerollSampleExamById(
+  examId: string,
+  extraBankQuestions: SampleBankQuestion[] = []
+): ExamRecord | null {
   const spec = SAMPLE_EXAM_SPECS.find((s) => s.id === examId);
-  return spec ? buildSampleExamFromSpec(spec) : null;
+  return spec ? buildSampleExamFromSpec(spec, extraBankQuestions) : null;
 }
