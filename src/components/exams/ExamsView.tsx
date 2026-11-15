@@ -1079,7 +1079,7 @@ export function ExamsView() {
       {/* Section 2: Teacher's Firebase Exams */}
       <section className="space-y-4">
         <h2 className="font-display text-xl font-bold text-slate-900">
-          Đề kiểm tra của giáo viên (Lưu trên Firebase)
+          Đề kiểm tra của giáo viên (Lưu trên hệ thống 7 ngày)
         </h2>
 
         {!user ? (

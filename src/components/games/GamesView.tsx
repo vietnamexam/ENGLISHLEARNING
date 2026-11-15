@@ -959,7 +959,7 @@ export function GamesView() {
       {/* Section 2: Teacher's Firebase Games */}
       <section className="space-y-4">
         <h2 className="font-display text-xl font-bold text-slate-900">
-          Trò chơi của giáo viên (Lưu trên Firebase)
+          Trò chơi của giáo viên (Lưu trên hệ thống 7 ngày)
         </h2>
 
         {!user ? (
