@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
+  Dices,
   Edit3,
   Gamepad2,
   Loader2,
@@ -26,16 +27,22 @@ import {
 } from 'firebase/firestore';
 import { GAME_TYPES, VOCAB_TOPICS } from '../../constants/topics';
 import { useAuth } from '../../context/AuthContext';
+import { buildAllSampleGames, rerollSampleGameById } from '../../data/gameQuestionBank';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import type { GameDifficulty, GameQuestion, GameRecord, GameType } from '../../types';
 import { apiRequest } from '../../utils/api';
+import { playCorrectSound, playWrongSound } from '../../utils/soundEffects';
 import { speakEnglish } from '../../utils/speech';
+import { AudioControlBar } from '../common/AudioControlBar';
 import { ConfirmModal } from '../common/ConfirmModal';
 import { useToast } from '../common/ToastProvider';
 
 export function GamesView() {
   const { user, canUseVipFeatures, vipConfig } = useAuth();
   const { showToast } = useToast();
+
+  const [sampleGames, setSampleGames] = useState<GameRecord[]>(() => buildAllSampleGames());
+  const [sampleFilterType, setSampleFilterType] = useState<GameType | 'all'>('all');
 
   const [games, setGames] = useState<GameRecord[]>([]);
   const [loadingGames, setLoadingGames] = useState(false);
@@ -93,6 +100,11 @@ export function GamesView() {
     return () => unsub();
   }, [user]);
 
+  const filteredSampleGames = useMemo(() => {
+    if (sampleFilterType === 'all') return sampleGames;
+    return sampleGames.filter((g) => g.gameType === sampleFilterType);
+  }, [sampleGames, sampleFilterType]);
+
   const resetEditor = () => {
     setEditingGameId(null);
     setTitle('');
@@ -105,7 +117,7 @@ export function GamesView() {
 
   const openCreateEditor = () => {
     if (!user) {
-      showToast('Vui lòng đăng nhập tài khoản giáo viên để tạo trò chơi.', 'error');
+      showToast('Vui lòng đăng nhập tài khoản giáo viên để tạo trò chơi mới.', 'error');
       return;
     }
     resetEditor();
@@ -121,6 +133,17 @@ export function GamesView() {
     setDifficulty(game.difficulty);
     setQuestions(game.questions || []);
     setViewMode('editor');
+  };
+
+  const handleRerollSampleGame = (gameId: string, autoPlay = false) => {
+    const fresh = rerollSampleGameById(gameId);
+    if (!fresh) return;
+    setSampleGames((prev) => prev.map((g) => (g.id === gameId ? fresh : g)));
+    if (autoPlay) {
+      startPlayGame(fresh);
+    } else {
+      showToast('Đã rút bộ câu hỏi ngẫu nhiên mới từ kho.', 'success');
+    }
   };
 
   const handleGenerateQuestionsAi = async () => {
@@ -279,6 +302,9 @@ export function GamesView() {
     setAnswered(isCorrect);
     if (isCorrect) {
       setScore((s) => s + 1);
+      playCorrectSound();
+    } else {
+      playWrongSound();
     }
   };
 
@@ -297,6 +323,7 @@ export function GamesView() {
   const handleMatchRightClick = (rightId: string) => {
     if (!selectedLeft || matchedIds.includes(rightId)) return;
     if (selectedLeft === rightId) {
+      playCorrectSound();
       const next = [...matchedIds, rightId];
       setMatchedIds(next);
       setScore((s) => s + 1);
@@ -305,6 +332,7 @@ export function GamesView() {
         setGameFinished(true);
       }
     } else {
+      playWrongSound();
       showToast('Chưa khớp nghĩa, hãy thử lại!', 'error');
       setSelectedLeft(null);
     }
@@ -312,9 +340,10 @@ export function GamesView() {
 
   // PLAY MODE UI
   if (viewMode === 'play' && playingGame) {
+    const isSample = playingGame.teacherId === 'system-sample';
     return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between gap-4">
+      <div className="space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <button
             type="button"
             onClick={() => setViewMode('list')}
@@ -324,10 +353,24 @@ export function GamesView() {
             Quay lại danh sách game
           </button>
 
-          <div className="text-sm font-semibold text-slate-700 tabular-nums">
-            Điểm: <span className="text-sky-700">{score}</span> / {playingGame.questions.length}
+          <div className="flex items-center gap-3">
+            {isSample && (
+              <button
+                type="button"
+                onClick={() => handleRerollSampleGame(playingGame.id, true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                <Dices className="h-3.5 w-3.5 text-sky-600" />
+                Đổi bộ câu hỏi ngẫu nhiên
+              </button>
+            )}
+            <div className="text-sm font-semibold text-slate-700 tabular-nums">
+              Điểm: <span className="text-sky-700">{score}</span> / {playingGame.questions.length}
+            </div>
           </div>
         </div>
+
+        <AudioControlBar />
 
         <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 max-w-3xl mx-auto space-y-6">
           <div className="border-b border-slate-100 pb-4">
@@ -352,14 +395,18 @@ export function GamesView() {
                 </strong>{' '}
                 điểm
               </p>
-              <div className="flex items-center justify-center gap-3 pt-2">
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => startPlayGame(playingGame)}
+                  onClick={() =>
+                    isSample
+                      ? handleRerollSampleGame(playingGame.id, true)
+                      : startPlayGame(playingGame)
+                  }
                   className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-sky-700 cursor-pointer"
                 >
                   <RotateCcw className="h-4 w-4" />
-                  Chơi lại
+                  {isSample ? 'Chơi ván mới (Ngẫu nhiên)' : 'Chơi lại'}
                 </button>
                 <button
                   type="button"
@@ -373,7 +420,8 @@ export function GamesView() {
           ) : playingGame.gameType === 'match' ? (
             <div className="space-y-4">
               <p className="text-sm text-slate-600">
-                Chọn một từ tiếng Anh ở cột trái rồi chọn nghĩa tiếng Việt tương ứng ở cột phải.
+                Chọn một từ tiếng Anh ở cột trái (có phát âm) rồi chọn nghĩa tiếng Việt tương ứng ở
+                cột phải.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2.5">
@@ -399,7 +447,11 @@ export function GamesView() {
                       >
                         {q.prompt}
                         {q.hint && (
-                          <span className={`ml-2 font-mono text-xs ${active ? 'text-sky-100' : 'text-slate-400'}`}>
+                          <span
+                            className={`ml-2 font-mono text-xs ${
+                              active ? 'text-sky-100' : 'text-slate-400'
+                            }`}
+                          >
                             {q.hint}
                           </span>
                         )}
@@ -435,19 +487,17 @@ export function GamesView() {
                 Câu {currentIdx + 1} / {playingGame.questions.length}
               </div>
 
-              {/* Image Guess visual cue */}
               {playingGame.gameType === 'image_guess' && (
                 <div className="flex flex-col items-center justify-center rounded-2xl bg-slate-50 border border-slate-200 p-8 gap-2">
                   <span className="text-6xl" aria-hidden="true">
                     {currentQuestion.visualCue || '📘'}
                   </span>
-                  <p className="text-sm font-medium text-slate-600 mt-2">
+                  <p className="text-sm font-medium text-slate-700 mt-2 text-center">
                     {currentQuestion.prompt}
                   </p>
                 </div>
               )}
 
-              {/* Listening Choice audio button */}
               {playingGame.gameType === 'listening_choice' && (
                 <div className="flex flex-col items-center justify-center rounded-2xl bg-sky-50 border border-sky-200 p-6 gap-3">
                   <button
@@ -472,7 +522,6 @@ export function GamesView() {
                 </h3>
               )}
 
-              {/* Sentence order interactive token builder */}
               {playingGame.gameType === 'sentence_order' ? (
                 <div className="space-y-4">
                   <div className="min-h-[60px] rounded-xl border border-slate-200 bg-slate-50 p-3 flex flex-wrap gap-2">
@@ -566,7 +615,7 @@ export function GamesView() {
                       {answered ? (
                         <>
                           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                          Chính xác!
+                          Đúng rồi, bạn giỏi quá!
                         </>
                       ) : (
                         <>
@@ -731,7 +780,6 @@ export function GamesView() {
           </div>
         </div>
 
-        {/* Question list editor */}
         <div className="space-y-4">
           {questions.map((q, idx) => (
             <div
@@ -809,14 +857,15 @@ export function GamesView() {
 
   // LIST MODE UI
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-bold text-slate-900">
             Trò chơi tiếng Anh
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Tạo, lưu trữ và tổ chức 6 dạng trò chơi tiếng Anh tương tác cho học sinh trên Firebase.
+            Luyện tập ngay với 12 trò chơi mẫu (mỗi dạng 2 trò chơi rút ngẫu nhiên từ kho 140 câu)
+            hoặc tự tạo trò chơi lưu trên Firebase.
           </p>
         </div>
 
@@ -830,37 +879,36 @@ export function GamesView() {
         </button>
       </div>
 
-      {/* 6 Game Types Overview */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {GAME_TYPES.map((gt, idx) => (
-          <div key={gt.id} className="rounded-xl border border-slate-200 bg-white p-4 space-y-1">
-            <div className="text-xs font-mono text-slate-400 tabular-nums">0{idx + 1}</div>
-            <h3 className="text-sm font-bold text-slate-900">{gt.label}</h3>
-            <p className="text-xs text-slate-500">{gt.description}</p>
-          </div>
-        ))}
-      </div>
+      <AudioControlBar />
 
-      {!user ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600">
-          Vui lòng đăng nhập tài khoản giáo viên tại mục <strong>Tài khoản</strong> để tạo và quản
-          lý danh sách trò chơi trên Firebase.
+      {/* Section 1: 12 Built-in Sample Games (2 per game type) */}
+      <section className="space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-xl font-bold text-slate-900">
+              Trò chơi mẫu tự luyện (12 trò chơi · Kho 140 câu)
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Mỗi dạng trò chơi có 2 bộ mẫu; câu hỏi được chọn ngẫu nhiên từ kho biên soạn.
+            </p>
+          </div>
+
+          <select
+            value={sampleFilterType}
+            onChange={(e) => setSampleFilterType(e.target.value as GameType | 'all')}
+            className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 self-start"
+          >
+            <option value="all">Tất cả 6 dạng trò chơi (12 mẫu)</option>
+            {GAME_TYPES.map((gt) => (
+              <option key={gt.id} value={gt.id}>
+                {gt.label} (2 mẫu)
+              </option>
+            ))}
+          </select>
         </div>
-      ) : loadingGames ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-8 flex items-center justify-center gap-2 text-sm text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Đang tải danh sách trò chơi từ Firebase...
-        </div>
-      ) : games.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center space-y-3">
-          <Gamepad2 className="h-10 w-10 text-slate-300 mx-auto" />
-          <p className="text-sm text-slate-600">
-            Bạn chưa tạo trò chơi nào. Nhấn <strong>Tạo game mới</strong> để bắt đầu.
-          </p>
-        </div>
-      ) : (
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {games.map((game) => {
+          {filteredSampleGames.map((game) => {
             const typeLabel =
               GAME_TYPES.find((t) => t.id === game.gameType)?.label || game.gameType;
             return (
@@ -871,9 +919,9 @@ export function GamesView() {
                 <div className="space-y-1.5">
                   <div className="text-xs text-slate-500">
                     {typeLabel} · {game.topic} ·{' '}
-                    <span className="tabular-nums">{game.questionCount} câu</span>
+                    <span className="tabular-nums">{game.questionCount} câu ngẫu nhiên</span>
                   </div>
-                  <h3 className="font-display text-lg font-bold text-slate-900">{game.title}</h3>
+                  <h3 className="font-display text-base font-bold text-slate-900">{game.title}</h3>
                   <p className="text-xs text-slate-500">
                     Độ khó:{' '}
                     {game.difficulty === 'easy'
@@ -891,30 +939,105 @@ export function GamesView() {
                     className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-sky-700 cursor-pointer"
                   >
                     <Play className="h-3.5 w-3.5" />
-                    Mở &amp; Chơi
+                    Chơi ngay
                   </button>
                   <button
                     type="button"
-                    onClick={() => openEditEditor(game)}
+                    onClick={() => handleRerollSampleGame(game.id, false)}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
                   >
-                    <Edit3 className="h-3.5 w-3.5" />
-                    Chỉnh sửa
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteTarget(game)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 cursor-pointer ml-auto"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    Xóa
+                    <Dices className="h-3.5 w-3.5 text-sky-600" />
+                    Rút câu hỏi mới
                   </button>
                 </div>
               </div>
             );
           })}
         </div>
-      )}
+      </section>
+
+      {/* Section 2: Teacher's Firebase Games */}
+      <section className="space-y-4">
+        <h2 className="font-display text-xl font-bold text-slate-900">
+          Trò chơi của giáo viên (Lưu trên Firebase)
+        </h2>
+
+        {!user ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
+            Đăng nhập tài khoản giáo viên tại mục <strong>Tài khoản</strong> để tự tạo, chỉnh sửa
+            và lưu danh sách trò chơi riêng trên Firebase.
+          </div>
+        ) : loadingGames ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-8 flex items-center justify-center gap-2 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Đang tải danh sách trò chơi từ Firebase...
+          </div>
+        ) : games.length === 0 ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center space-y-2">
+            <Gamepad2 className="h-9 w-9 text-slate-300 mx-auto" />
+            <p className="text-sm text-slate-600">
+              Bạn chưa lưu trò chơi riêng nào. Nhấn <strong>Tạo game mới</strong> để tạo và lưu
+              lên Firebase.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {games.map((game) => {
+              const typeLabel =
+                GAME_TYPES.find((t) => t.id === game.gameType)?.label || game.gameType;
+              return (
+                <div
+                  key={game.id}
+                  className="rounded-2xl border border-slate-200 bg-white p-5 flex flex-col justify-between gap-4"
+                >
+                  <div className="space-y-1.5">
+                    <div className="text-xs text-slate-500">
+                      {typeLabel} · {game.topic} ·{' '}
+                      <span className="tabular-nums">{game.questionCount} câu</span>
+                    </div>
+                    <h3 className="font-display text-lg font-bold text-slate-900">{game.title}</h3>
+                    <p className="text-xs text-slate-500">
+                      Độ khó:{' '}
+                      {game.difficulty === 'easy'
+                        ? 'Dễ'
+                        : game.difficulty === 'medium'
+                          ? 'Trung bình'
+                          : 'Khó'}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => startPlayGame(game)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-sky-700 cursor-pointer"
+                    >
+                      <Play className="h-3.5 w-3.5" />
+                      Mở &amp; Chơi
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditEditor(game)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" />
+                      Chỉnh sửa
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(game)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 cursor-pointer ml-auto"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Xóa
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       <ConfirmModal
         open={Boolean(deleteTarget)}

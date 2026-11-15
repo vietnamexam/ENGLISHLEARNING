@@ -16,6 +16,75 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024 },
 });
 
+const ttsCache = new Map<string, string>();
+
+router.post('/tts', optionalFirebaseAuth, async (req: RequestWithAuth, res) => {
+  try {
+    const { text, lang } = req.body as { text?: string; lang?: 'vi' | 'en' };
+    const cleanText = String(text || '').trim().slice(0, 600);
+    if (!cleanText) {
+      res.status(400).json({ error: 'Vui lòng cung cấp nội dung cần đọc.' });
+      return;
+    }
+    const targetLang = lang === 'en' ? 'en' : 'vi';
+    const cacheKey = `${targetLang}:${cleanText}`;
+    const cached = ttsCache.get(cacheKey);
+    if (cached) {
+      res.json({ audioBase64: cached, mimeType: 'audio/wav' });
+      return;
+    }
+
+    const ai = getGeminiClient();
+    const style =
+      targetLang === 'vi'
+        ? 'Clear, warm, natural standard Vietnamese teacher voice, accurate tones and pronunciation'
+        : 'Clear, natural standard American English teacher voice, articulate pronunciation';
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash-lite-tts',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: cleanText,
+              speechMetadata: {
+                style,
+              },
+            },
+          ],
+        },
+      ],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: targetLang === 'vi' ? 'Zephyr' : 'Kore',
+            },
+          },
+        },
+      },
+    });
+
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!base64Audio) {
+      res.status(500).json({ error: 'Không tạo được dữ liệu âm thanh TTS.' });
+      return;
+    }
+
+    if (ttsCache.size >= 120) {
+      const oldestKey = ttsCache.keys().next().value;
+      if (oldestKey) ttsCache.delete(oldestKey);
+    }
+    ttsCache.set(cacheKey, base64Audio);
+    res.json({ audioBase64: base64Audio, mimeType: 'audio/wav' });
+  } catch (error) {
+    const formatted = formatGeminiError(error);
+    res.status(formatted.status).json({ error: formatted.message });
+  }
+});
+
 router.post('/vocab', optionalFirebaseAuth, async (req: RequestWithAuth, res) => {
   try {
     const { words, topic } = req.body as { words?: string[]; topic?: string };

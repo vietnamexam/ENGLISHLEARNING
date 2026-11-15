@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Copy,
+  Dices,
   Edit3,
   FileUp,
   Loader2,
@@ -27,10 +28,13 @@ import {
 } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useAuth } from '../../context/AuthContext';
+import { buildAllSampleExams, rerollSampleExamById } from '../../data/examQuestionBank';
 import { db, handleFirestoreError, OperationType, storage } from '../../lib/firebase';
 import type { ExamQuestion, ExamQuestionType, ExamRecord } from '../../types';
 import { apiRequest } from '../../utils/api';
+import { playCorrectSound, playWrongSound } from '../../utils/soundEffects';
 import { speakEnglish } from '../../utils/speech';
+import { AudioControlBar } from '../common/AudioControlBar';
 import { ConfirmModal } from '../common/ConfirmModal';
 import { useToast } from '../common/ToastProvider';
 
@@ -42,12 +46,14 @@ const QUESTION_TYPE_LABELS: Record<ExamQuestionType, string> = {
   grammar: 'Ngữ pháp',
   vocabulary: 'Từ vựng',
   listening: 'Nghe hiểu',
-  other: 'Dạng khác',
+  other: 'Tìm lỗi / Viết lại câu',
 };
 
 export function ExamsView() {
   const { user, canUseVipFeatures, vipConfig } = useAuth();
   const { showToast } = useToast();
+
+  const [sampleExams, setSampleExams] = useState<ExamRecord[]>(() => buildAllSampleExams());
 
   const [exams, setExams] = useState<ExamRecord[]>([]);
   const [loadingList, setLoadingList] = useState(false);
@@ -77,6 +83,7 @@ export function ExamsView() {
   // Student Exam Runner
   const [activeExam, setActiveExam] = useState<ExamRecord | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [checkedQuestions, setCheckedQuestions] = useState<Record<string, boolean>>({});
   const [submittedScore, setSubmittedScore] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [attemptCount, setAttemptCount] = useState<Record<string, number>>({});
@@ -135,7 +142,7 @@ export function ExamsView() {
 
   const handleOpenCreate = () => {
     if (!user) {
-      showToast('Vui lòng đăng nhập tài khoản giáo viên để tạo đề kiểm tra.', 'error');
+      showToast('Vui lòng đăng nhập tài khoản giáo viên để tạo đề kiểm tra riêng.', 'error');
       return;
     }
     resetEditor();
@@ -159,6 +166,17 @@ export function ExamsView() {
     setViewMode('editor');
   };
 
+  const handleRerollSampleExam = (examId: string, autoStart = false) => {
+    const fresh = rerollSampleExamById(examId);
+    if (!fresh) return;
+    setSampleExams((prev) => prev.map((e) => (e.id === examId ? fresh : e)));
+    if (autoStart) {
+      startExam(fresh);
+    } else {
+      showToast('Đã rút bộ câu hỏi ngẫu nhiên mới cho đề thi mẫu.', 'success');
+    }
+  };
+
   const handleUploadWordOrPdf = async (file: File | null) => {
     if (!file || !user) return;
     if (vipConfig.vipModeEnabled && !canUseVipFeatures) {
@@ -171,7 +189,6 @@ export function ExamsView() {
 
     setParsingFile(true);
     try {
-      // 1. Store original Word/PDF file in Firebase Storage
       let uploadedUrl = '';
       try {
         const storageRef = ref(storage, `exams/${user.uid}/${Date.now()}_${file.name}`);
@@ -181,7 +198,6 @@ export function ExamsView() {
         console.warn('Firebase Storage upload skipped or restricted:', storageErr);
       }
 
-      // 2. Send file to server for Gemini parsing (no guessing!)
       const formData = new FormData();
       formData.append('file', file);
       const parsed = await apiRequest<{
@@ -377,9 +393,26 @@ export function ExamsView() {
 
     setActiveExam(exam);
     setAnswers({});
+    setCheckedQuestions({});
     setSubmittedScore(null);
     setSecondsLeft((exam.durationMinutes || 45) * 60);
     setViewMode('take');
+  };
+
+  const handleCheckSingleQuestion = (q: ExamQuestion) => {
+    const userVal = (answers[q.id] || '').trim().toLowerCase();
+    if (!userVal) {
+      showToast('Hãy chọn hoặc nhập câu trả lời trước khi kiểm tra.', 'info');
+      return;
+    }
+    const rightAns = (q.correctAnswer || '').trim().toLowerCase();
+    const isRight = userVal === rightAns;
+    setCheckedQuestions((prev) => ({ ...prev, [q.id]: true }));
+    if (isRight) {
+      playCorrectSound();
+    } else {
+      playWrongSound();
+    }
   };
 
   const submitExam = () => {
@@ -397,6 +430,12 @@ export function ExamsView() {
       totalPoints > 0 ? Math.round(((earned / totalPoints) * activeExam.maxScore) * 100) / 100 : 0;
     setSubmittedScore(scaled);
     setAttemptCount((prev) => ({ ...prev, [activeExam.id]: (prev[activeExam.id] || 0) + 1 }));
+
+    if (scaled >= activeExam.maxScore * 0.5) {
+      playCorrectSound();
+    } else {
+      playWrongSound();
+    }
     showToast(`Đã nộp bài! Điểm đạt được: ${scaled}/${activeExam.maxScore}`, 'success');
   };
 
@@ -408,9 +447,10 @@ export function ExamsView() {
 
   // TAKE EXAM MODE
   if (viewMode === 'take' && activeExam) {
+    const isSample = activeExam.teacherId === 'system-sample';
     return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between gap-4">
+      <div className="space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <button
             type="button"
             onClick={() => setViewMode('list')}
@@ -420,10 +460,24 @@ export function ExamsView() {
             Thoát bài thi
           </button>
 
-          <div className="font-mono text-sm font-semibold text-slate-900 tabular-nums">
-            Thời gian còn lại: <span className="text-sky-700">{formatTimer(secondsLeft)}</span>
+          <div className="flex items-center gap-3">
+            {isSample && (
+              <button
+                type="button"
+                onClick={() => handleRerollSampleExam(activeExam.id, true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                <Dices className="h-3.5 w-3.5 text-sky-600" />
+                Rút đề ngẫu nhiên mới
+              </button>
+            )}
+            <div className="font-mono text-sm font-semibold text-slate-900 tabular-nums">
+              Thời gian còn lại: <span className="text-sky-700">{formatTimer(secondsLeft)}</span>
+            </div>
           </div>
         </div>
+
+        <AudioControlBar />
 
         <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 max-w-3xl mx-auto space-y-6">
           <div className="border-b border-slate-100 pb-4">
@@ -446,10 +500,12 @@ export function ExamsView() {
               {activeExam.allowRetake && (
                 <button
                   type="button"
-                  onClick={() => startExam(activeExam)}
+                  onClick={() =>
+                    isSample ? handleRerollSampleExam(activeExam.id, true) : startExam(activeExam)
+                  }
                   className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 cursor-pointer"
                 >
-                  Làm lại bài thi
+                  {isSample ? 'Làm lại đề ngẫu nhiên mới' : 'Làm lại bài thi'}
                 </button>
               )}
             </div>
@@ -460,6 +516,9 @@ export function ExamsView() {
               const userVal = answers[q.id] || '';
               const isRight =
                 userVal.trim().toLowerCase() === q.correctAnswer.trim().toLowerCase();
+              const showFeedback =
+                (submittedScore !== null && activeExam.allowViewAnswers) ||
+                (isSample && checkedQuestions[q.id]);
 
               return (
                 <div key={q.id} className="rounded-xl border border-slate-200 p-4 space-y-3">
@@ -471,26 +530,30 @@ export function ExamsView() {
                   </div>
 
                   {q.passage && (
-                    <div className="rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+                    <div className="rounded-lg bg-slate-50 p-3.5 text-sm leading-relaxed text-slate-700">
                       {q.passage}
                     </div>
                   )}
 
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="text-sm font-semibold text-slate-900">
-                      Câu {idx + 1}: {q.prompt}
-                    </p>
-                    {q.questionType === 'listening' && (
+                  {q.questionType === 'listening' ? (
+                    <div className="rounded-xl bg-sky-50 border border-sky-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-sky-950">
+                        Câu {idx + 1}: Nhấn nghe đoạn tiếng Anh và chọn đáp án đúng
+                      </p>
                       <button
                         type="button"
                         onClick={() => speakEnglish(q.prompt)}
-                        className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 shrink-0 cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-sky-700 shrink-0 cursor-pointer"
                       >
-                        <Volume2 className="h-3.5 w-3.5 inline mr-1" />
-                        Nghe
+                        <Volume2 className="h-4 w-4" />
+                        Nghe phát âm câu hỏi
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm font-semibold text-slate-900">
+                      Câu {idx + 1}: {q.prompt}
+                    </p>
+                  )}
 
                   {q.options && q.options.filter(Boolean).length > 0 ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -523,14 +586,26 @@ export function ExamsView() {
                     />
                   )}
 
-                  {submittedScore !== null && activeExam.allowViewAnswers && (
+                  {isSample && submittedScore === null && (
+                    <div className="flex items-center justify-between pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleCheckSingleQuestion(q)}
+                        className="text-xs font-semibold text-sky-700 hover:underline cursor-pointer"
+                      >
+                        Kiểm tra nhanh câu này
+                      </button>
+                    </div>
+                  )}
+
+                  {showFeedback && (
                     <div
                       className={`text-xs font-medium ${
                         isRight ? 'text-emerald-700' : 'text-rose-700'
                       }`}
                     >
                       {isRight
-                        ? 'Chính xác'
+                        ? 'Đúng rồi, bạn giỏi quá!'
                         : `Chưa đúng · Đáp án đúng: ${q.correctAnswer}`}
                     </div>
                   )}
@@ -585,7 +660,6 @@ export function ExamsView() {
           </button>
         </div>
 
-        {/* Word / PDF Import Box */}
         <div className="rounded-2xl border border-slate-200 bg-white p-6 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
@@ -621,7 +695,6 @@ export function ExamsView() {
           )}
         </div>
 
-        {/* Exam Config */}
         <div className="rounded-2xl border border-slate-200 bg-white p-6 space-y-4">
           <h3 className="font-display text-lg font-bold text-slate-900">Cấu hình đề thi</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -741,7 +814,6 @@ export function ExamsView() {
           </div>
         </div>
 
-        {/* Review Alert */}
         {needReviewCount > 0 && (
           <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex items-start gap-3 text-amber-900">
             <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 mt-0.5" />
@@ -753,7 +825,6 @@ export function ExamsView() {
           </div>
         )}
 
-        {/* Questions Editor */}
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="font-display text-lg font-bold text-slate-900">
@@ -928,15 +999,15 @@ export function ExamsView() {
 
   // LIST MODE
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-bold text-slate-900">
-            Quản lý đề kiểm tra
+            Đề kiểm tra tiếng Anh
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Tải lên file Word/PDF để chuyển thành đề thi trực tuyến, kiểm duyệt đáp án và giao cho
-            học sinh.
+            Tự luyện ngay với 3 đề kiểm tra mẫu đủ thể loại (rút ngẫu nhiên từ kho câu hỏi) hoặc
+            tải file Word/PDF để tạo đề kiểm tra riêng.
           </p>
         </div>
 
@@ -950,98 +1021,160 @@ export function ExamsView() {
         </button>
       </div>
 
-      {!user ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600">
-          Vui lòng đăng nhập tài khoản giáo viên tại mục <strong>Tài khoản</strong> để tạo và quản
-          lý đề kiểm tra trên Firebase.
-        </div>
-      ) : loadingList ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-8 flex items-center justify-center gap-2 text-sm text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Đang tải danh sách đề thi...
-        </div>
-      ) : exams.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center space-y-3">
-          <ClipboardCheck className="h-10 w-10 text-slate-300 mx-auto" />
-          <p className="text-sm text-slate-600">
-            Chưa có đề kiểm tra nào. Nhấn <strong>Tạo đề kiểm tra mới</strong> để tải file
-            Word/PDF hoặc tự soạn đề.
+      <AudioControlBar />
+
+      {/* Section 1: 3 Built-in Multi-Type Sample Exams */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="font-display text-xl font-bold text-slate-900">
+            Đề thi mẫu tự luyện (3 đề · Đủ thể loại · Lấy ngẫu nhiên từ kho)
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Bao gồm Từ vựng, Ngữ pháp, Trắc nghiệm, Điền từ, Sắp xếp câu, Đọc hiểu, Nghe hiểu và
+            Tìm lỗi sai.
           </p>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {exams.map((exam) => (
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {sampleExams.map((exam) => (
             <div
               key={exam.id}
               className="rounded-2xl border border-slate-200 bg-white p-5 flex flex-col justify-between gap-4"
             >
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-xs text-slate-500">
-                  <span>
-                    Lớp {exam.gradeLevel} · {exam.topic} ·{' '}
-                    <span className="tabular-nums">{exam.durationMinutes} phút</span>
-                  </span>
-                  <span
-                    className={`font-semibold ${
-                      exam.isActive ? 'text-emerald-700' : 'text-slate-400'
-                    }`}
-                  >
-                    {exam.isActive ? 'Đang mở' : 'Đang tắt'}
-                  </span>
+                <div className="text-xs text-slate-500">
+                  Lớp {exam.gradeLevel} ·{' '}
+                  <span className="tabular-nums">{exam.durationMinutes} phút</span> ·{' '}
+                  <span className="tabular-nums">{exam.questions.length} câu ngẫu nhiên</span>
                 </div>
-                <h3 className="font-display text-lg font-bold text-slate-900">{exam.title}</h3>
-                <p className="text-xs text-slate-500 tabular-nums">
-                  {exam.questions?.length || 0} câu hỏi · Điểm tối đa {exam.maxScore} ·{' '}
-                  {exam.allowViewAnswers ? 'Cho xem đáp án' : 'Ẩn đáp án'}
-                </p>
+                <h3 className="font-display text-base font-bold text-slate-900 leading-snug">
+                  {exam.title}
+                </h3>
+                <p className="text-xs text-slate-500">{exam.topic}</p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => startExam(exam)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-700 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-sky-700 cursor-pointer"
                 >
                   <Play className="h-3.5 w-3.5" />
-                  Làm thử / Xem đề
+                  Làm đề ngay
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleOpenEdit(exam)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  onClick={() => handleRerollSampleExam(exam.id, false)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
                 >
-                  <Edit3 className="h-3.5 w-3.5" />
-                  Sửa
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDuplicateExam(exam)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                  Sao chép
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleToggleExamStatus(exam)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-                >
-                  <Power className="h-3.5 w-3.5" />
-                  {exam.isActive ? 'Tắt' : 'Bật'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDeleteTarget(exam)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 cursor-pointer ml-auto"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Xóa
+                  <Dices className="h-3.5 w-3.5 text-sky-600" />
+                  Đổi câu ngẫu nhiên
                 </button>
               </div>
             </div>
           ))}
         </div>
-      )}
+      </section>
+
+      {/* Section 2: Teacher's Firebase Exams */}
+      <section className="space-y-4">
+        <h2 className="font-display text-xl font-bold text-slate-900">
+          Đề kiểm tra của giáo viên (Lưu trên Firebase)
+        </h2>
+
+        {!user ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
+            Đăng nhập tài khoản giáo viên tại mục <strong>Tài khoản</strong> để tải lên Word/PDF,
+            lưu trữ và quản lý đề kiểm tra riêng trên Firebase.
+          </div>
+        ) : loadingList ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-8 flex items-center justify-center gap-2 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Đang tải danh sách đề thi...
+          </div>
+        ) : exams.length === 0 ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center space-y-2">
+            <ClipboardCheck className="h-9 w-9 text-slate-300 mx-auto" />
+            <p className="text-sm text-slate-600">
+              Chưa có đề kiểm tra riêng nào. Nhấn <strong>Tạo đề kiểm tra mới</strong> để tải file
+              Word/PDF hoặc tự soạn đề.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {exams.map((exam) => (
+              <div
+                key={exam.id}
+                className="rounded-2xl border border-slate-200 bg-white p-5 flex flex-col justify-between gap-4"
+              >
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>
+                      Lớp {exam.gradeLevel} · {exam.topic} ·{' '}
+                      <span className="tabular-nums">{exam.durationMinutes} phút</span>
+                    </span>
+                    <span
+                      className={`font-semibold ${
+                        exam.isActive ? 'text-emerald-700' : 'text-slate-400'
+                      }`}
+                    >
+                      {exam.isActive ? 'Đang mở' : 'Đang tắt'}
+                    </span>
+                  </div>
+                  <h3 className="font-display text-lg font-bold text-slate-900">{exam.title}</h3>
+                  <p className="text-xs text-slate-500 tabular-nums">
+                    {exam.questions?.length || 0} câu hỏi · Điểm tối đa {exam.maxScore} ·{' '}
+                    {exam.allowViewAnswers ? 'Cho xem đáp án' : 'Ẩn đáp án'}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => startExam(exam)}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-700 cursor-pointer"
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    Làm thử / Xem đề
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenEdit(exam)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  >
+                    <Edit3 className="h-3.5 w-3.5" />
+                    Sửa
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDuplicateExam(exam)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    Sao chép
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleExamStatus(exam)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  >
+                    <Power className="h-3.5 w-3.5" />
+                    {exam.isActive ? 'Tắt' : 'Bật'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteTarget(exam)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 cursor-pointer ml-auto"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Xóa
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       <ConfirmModal
         open={Boolean(deleteTarget)}
