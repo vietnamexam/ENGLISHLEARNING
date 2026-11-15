@@ -865,7 +865,7 @@ export function GamesView() {
           </h1>
           <p className="text-sm text-slate-600 mt-1">
             Luyện tập ngay với 12 trò chơi mẫu (mỗi dạng 2 trò chơi rút ngẫu nhiên từ kho 140 câu)
-            hoặc tự tạo trò chơi lưu trên Firebase.
+            hoặc tự tạo trò chơi dành cho giáo viên.Trò chơi sẽ lưu 7 ngày trên hệ thống!
           </p>
         </div>
 
