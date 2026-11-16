@@ -76,13 +76,16 @@ export function GamesView() {
   const [deleteTarget, setDeleteTarget] = useState<GameRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Play state
+  // Play state (60 seconds per question limit)
+  const QUESTION_TIME_LIMIT_SEC = 60;
   const [playingGame, setPlayingGame] = useState<GameRecord | null>(null);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [score, setScore] = useState(0);
   const [userAnswer, setUserAnswer] = useState('');
   const [sentenceTokens, setSentenceTokens] = useState<string[]>([]);
   const [answered, setAnswered] = useState<boolean | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
+  const [questionSecondsLeft, setQuestionSecondsLeft] = useState(QUESTION_TIME_LIMIT_SEC);
   const [gameFinished, setGameFinished] = useState(false);
 
   // Match game state
@@ -362,6 +365,8 @@ export function GamesView() {
     setUserAnswer('');
     setSentenceTokens([]);
     setAnswered(null);
+    setTimedOut(false);
+    setQuestionSecondsLeft(QUESTION_TIME_LIMIT_SEC);
     setGameFinished(false);
     setSelectedLeft(null);
     setMatchedIds([]);
@@ -369,6 +374,35 @@ export function GamesView() {
   };
 
   const currentQuestion = playingGame?.questions?.[currentIdx];
+
+  // Per-question 60-second countdown timer
+  useEffect(() => {
+    if (viewMode !== 'play' || !playingGame || gameFinished) return;
+    if (playingGame.gameType !== 'match' && answered !== null) return;
+    if (questionSecondsLeft <= 0) return;
+
+    const timer = window.setInterval(() => {
+      setQuestionSecondsLeft((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [viewMode, playingGame, gameFinished, answered, questionSecondsLeft]);
+
+  // Handle expiration when questionSecondsLeft reaches 0
+  useEffect(() => {
+    if (viewMode !== 'play' || !playingGame || gameFinished || questionSecondsLeft > 0) return;
+    if (playingGame.gameType !== 'match' && answered !== null) return;
+    if (timedOut) return;
+
+    setTimedOut(true);
+    playWrongSound();
+    if (playingGame.gameType === 'match') {
+      setGameFinished(true);
+      showToast('Hết 60 giây! Lượt ghép từ đã kết thúc.', 'error');
+    } else {
+      setAnswered(false);
+    }
+  }, [viewMode, playingGame, gameFinished, questionSecondsLeft, answered, timedOut, showToast]);
 
   const shuffledMatchRight = useMemo(() => {
     if (!playingGame || playingGame.gameType !== 'match') return [];
@@ -383,6 +417,7 @@ export function GamesView() {
     if (!currentQuestion || answered !== null) return;
     const isCorrect =
       choice.trim().toLowerCase() === currentQuestion.correctAnswer.trim().toLowerCase();
+    setTimedOut(false);
     setUserAnswer(choice);
     setAnswered(isCorrect);
     if (isCorrect) {
@@ -402,17 +437,21 @@ export function GamesView() {
       setUserAnswer('');
       setSentenceTokens([]);
       setAnswered(null);
+      setTimedOut(false);
+      setQuestionSecondsLeft(QUESTION_TIME_LIMIT_SEC);
     }
   };
 
   const handleMatchRightClick = (rightId: string) => {
-    if (!selectedLeft || matchedIds.includes(rightId)) return;
+    if (!selectedLeft || matchedIds.includes(rightId) || gameFinished) return;
     if (selectedLeft === rightId) {
       playCorrectSound();
       const next = [...matchedIds, rightId];
       setMatchedIds(next);
       setScore((s) => s + 1);
       setSelectedLeft(null);
+      setQuestionSecondsLeft(QUESTION_TIME_LIMIT_SEC);
+      setTimedOut(false);
       if (playingGame && next.length === playingGame.questions.length) {
         setGameFinished(true);
       }
@@ -458,20 +497,55 @@ export function GamesView() {
         <AudioControlBar />
 
         <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 max-w-3xl mx-auto space-y-6">
-          <div className="border-b border-slate-100 pb-4">
-            <div className="text-xs text-slate-500">
-              {GAME_TYPES.find((t) => t.id === playingGame.gameType)?.label} · {playingGame.topic}
+          <div className="border-b border-slate-100 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="text-xs text-slate-500">
+                {GAME_TYPES.find((t) => t.id === playingGame.gameType)?.label} · {playingGame.topic}{' '}
+                · Giới hạn 60 giây/câu
+              </div>
+              <h2 className="font-display text-2xl font-bold text-slate-900 mt-1">
+                {playingGame.title}
+              </h2>
             </div>
-            <h2 className="font-display text-2xl font-bold text-slate-900 mt-1">
-              {playingGame.title}
-            </h2>
+
+            {!gameFinished && (
+              <div
+                className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-bold tabular-nums shrink-0 self-start sm:self-center ${
+                  questionSecondsLeft <= 15
+                    ? 'border-rose-300 bg-rose-50 text-rose-700'
+                    : 'border-sky-200 bg-sky-50 text-sky-800'
+                }`}
+              >
+                <Clock className="h-4 w-4" />
+                <span>{questionSecondsLeft}s / 60s</span>
+              </div>
+            )}
           </div>
+
+          {!gameFinished && (
+            <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+              <div
+                className={`h-full transition-all duration-500 ${
+                  questionSecondsLeft <= 15 ? 'bg-rose-500' : 'bg-sky-500'
+                }`}
+                style={{
+                  width: `${Math.max(0, Math.min(100, (questionSecondsLeft / QUESTION_TIME_LIMIT_SEC) * 100))}%`,
+                }}
+              />
+            </div>
+          )}
 
           {gameFinished ? (
             <div className="py-8 text-center space-y-4">
-              <CheckCircle2 className="h-14 w-14 text-emerald-600 mx-auto" />
+              {timedOut && playingGame.gameType === 'match' ? (
+                <XCircle className="h-14 w-14 text-rose-500 mx-auto" />
+              ) : (
+                <CheckCircle2 className="h-14 w-14 text-emerald-600 mx-auto" />
+              )}
               <h3 className="font-display text-2xl font-bold text-slate-900">
-                Hoàn thành trò chơi!
+                {timedOut && playingGame.gameType === 'match'
+                  ? 'Hết thời gian 60 giây!'
+                  : 'Hoàn thành trò chơi!'}
               </h3>
               <p className="text-base text-slate-600 tabular-nums">
                 Kết quả của bạn:{' '}
@@ -701,6 +775,11 @@ export function GamesView() {
                         <>
                           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                           Đúng rồi, bạn giỏi quá!
+                        </>
+                      ) : timedOut ? (
+                        <>
+                          <Clock className="h-4 w-4 text-rose-600" />
+                          Hết thời gian 60 giây! Đáp án: {currentQuestion.correctAnswer}
                         </>
                       ) : (
                         <>
